@@ -41,62 +41,83 @@
 
   function log(msg) { console.log('[z01-wrapper]', msg); }
 
-  // --- 1. Trap Lampa.Manifest.plugins via property setter ----
-  //     Fires at the exact moment online.js writes the manifest,
-  //     so Lampa always reads our patched version.
-  function trapManifest() {
-    if (!window.Lampa || !Lampa.Manifest) {
-      log('Lampa.Manifest not ready, retrying…');
-      return false;
-    }
-    var _stored = Lampa.Manifest.plugins || null;
-    Object.defineProperty(Lampa.Manifest, 'plugins', {
-      configurable: true,
-      enumerable: true,
-      set: function (val) {
-        if (val && typeof val === 'object') {
-          if (CONFIG.pluginListName)  val.name = CONFIG.pluginListName;
-          if (CONFIG.manifestIcon)    val.icon = CONFIG.manifestIcon;
-        }
-        _stored = val;
-        log('Manifest.plugins trapped → name: ' + (val && val.name));
-      },
-      get: function () { return _stored; }
-    });
-    return true;
-  }
-
-  // --- 2. Override the lang key used in the context menu label --
-  function patchLangKey() {
-    if (!Lampa.Lang || typeof Lampa.Lang.add !== 'function') return;
-    Lampa.Lang.add({ lampac_watch: CONFIG.contextMenuLabel });
-    log('Lang key patched');
-  }
-
-  // --- 3. Intercept SettingsApi.addComponent for the settings icon/name
-  function trapSettingsApi() {
-    if (!Lampa.SettingsApi || typeof Lampa.SettingsApi.addComponent !== 'function') return;
-    var orig = Lampa.SettingsApi.addComponent.bind(Lampa.SettingsApi);
-    Lampa.SettingsApi.addComponent = function (opts) {
-      if (opts && opts.component === 'z01_premium') {
-        if (CONFIG.settings.name)  opts.name = CONFIG.settings.name;
-        if (CONFIG.settings.icon)  opts.icon = CONFIG.settings.icon;
-        log('SettingsApi.addComponent patched → ' + opts.name);
-      }
-      return orig(opts);
-    };
-  }
-
-  // --- 4. Load the original script dynamically ---------------
+  // Always load the origin script — called at the end no matter what
   function loadOrigin() {
     var s = document.createElement('script');
     s.src = ORIGIN;
-    s.onload  = function () { log('Origin loaded — all patches active'); };
+    s.onload  = function () { log('Origin loaded OK'); };
     s.onerror = function () { log('ERROR: could not load ' + ORIGIN); };
     document.head.appendChild(s);
   }
 
-  // --- Entry: wait for Lampa core, then set all traps, then load
+  // Trap Lampa.Manifest.plugins setter with Object.defineProperty
+  function trapManifest() {
+    try {
+      var _val = Lampa.Manifest.plugins || null;
+      Object.defineProperty(Lampa.Manifest, 'plugins', {
+        configurable: true,
+        enumerable: true,
+        set: function (v) {
+          if (v && typeof v === 'object') {
+            if (CONFIG.pluginListName) v.name = CONFIG.pluginListName;
+            if (CONFIG.manifestIcon)  v.icon = CONFIG.manifestIcon;
+          }
+          _val = v;
+          log('Manifest.plugins set → name=' + (v && v.name));
+        },
+        get: function () { return _val; }
+      });
+      log('Manifest trap installed');
+    } catch (e) {
+      log('Manifest trap failed (' + e.message + ') — will patch post-load');
+    }
+  }
+
+  // Patch the lang key driving the context menu label
+  function patchLang() {
+    try {
+      Lampa.Lang.add({ lampac_watch: CONFIG.contextMenuLabel });
+      log('Lang patched');
+    } catch (e) {
+      log('Lang patch failed: ' + e.message);
+    }
+  }
+
+  // Intercept SettingsApi.addComponent
+  function trapSettings() {
+    try {
+      var orig = Lampa.SettingsApi.addComponent;
+      Lampa.SettingsApi.addComponent = function (opts) {
+        if (opts && opts.component === 'z01_premium') {
+          if (CONFIG.settingsName) opts.name = CONFIG.settingsName;
+          if (CONFIG.settingsIcon) opts.icon = CONFIG.settingsIcon;
+          log('Settings component patched → ' + opts.name);
+        }
+        return orig.call(Lampa.SettingsApi, opts);
+      };
+      log('SettingsApi trap installed');
+    } catch (e) {
+      log('SettingsApi trap failed: ' + e.message);
+    }
+  }
+
+  // Fallback: patch manifest fields directly after online.js loads
+  function postLoadPatch() {
+    try {
+      var mp = Lampa.Manifest && Lampa.Manifest.plugins;
+      if (mp) {
+        if (CONFIG.pluginListName) mp.name = CONFIG.pluginListName;
+        if (CONFIG.manifestIcon)  mp.icon = CONFIG.manifestIcon;
+        log('Post-load manifest patch applied');
+      }
+    } catch (e) {
+      log('Post-load patch failed: ' + e.message);
+    }
+    try {
+      Lampa.Lang.add({ lampac_watch: CONFIG.contextMenuLabel });
+    } catch (e) {}
+  }
+
   function waitFor(check, cb) {
     if (check()) { cb(); return; }
     var t = setInterval(function () { if (check()) { clearInterval(t); cb(); } }, 50);
@@ -112,9 +133,18 @@
     function () {
       log('Lampa ready — installing traps');
       trapManifest();
-      patchLangKey();
-      trapSettingsApi();
-      loadOrigin();
+      patchLang();
+      trapSettings();
+
+      // Load origin, then run fallback patch in case traps missed anything
+      var s = document.createElement('script');
+      s.src = ORIGIN;
+      s.onload = function () {
+        log('Origin loaded OK');
+        postLoadPatch();
+      };
+      s.onerror = function () { log('ERROR: could not load ' + ORIGIN); };
+      document.head.appendChild(s);
     }
   );
 
