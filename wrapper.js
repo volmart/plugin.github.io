@@ -11,8 +11,7 @@
   // ============================================================
   var CONFIG = {
 
-    // Subtitle shown BELOW the button icon on the movie card
-    // (e.g. "Z01" → change to "MyPlugin" to see it update)
+    // Text shown BELOW the button icon on the movie card
     buttonSubtitle: 'MV',
 
     // SVG icon shown on the movie card button
@@ -46,31 +45,7 @@
   var ORIGIN = 'http://z01.online/online.js';
   function log(msg) { console.log('[z01-wrapper]', msg); }
 
-  // --- Patch 1: manifst.name via setter trap ------------------
-  //     manifst.name is used in .concat() for data-subtitle AFTER
-  //     Lampa.Manifest.plugins = manifst runs (line 2066 < line 2501),
-  //     so our setter fires first and the correct name lands in the button.
-  function wrapManifest() {
-    try {
-      var _val = Lampa.Manifest.plugins || null;
-      Object.defineProperty(Lampa.Manifest, 'plugins', {
-        configurable: true, enumerable: true,
-        set: function (v) {
-          if (v && typeof v === 'object' && CONFIG.buttonSubtitle)
-            v.name = CONFIG.buttonSubtitle;
-          _val = v;
-          log('Manifest.plugins set, name=' + (v && v.name));
-        },
-        get: function () { return _val; }
-      });
-      log('Manifest setter trap OK');
-    } catch (e) {
-      log('Manifest setter trap failed: ' + e.message);
-    }
-  }
-
-  // --- Patch 2: Lampa.Lang.translate intercept ----------------
-  //     Intercept at call time → immune to Lang.add "set-if-not-exists"
+  // --- Patch 1: Lampa.Lang.translate intercept ----------------
   function wrapTranslate() {
     try {
       var orig = Lampa.Lang.translate.bind(Lampa.Lang);
@@ -87,7 +62,7 @@
     } catch (e) { log('Lang.translate wrap failed: ' + e.message); }
   }
 
-  // --- Patch 3: SettingsApi.addComponent intercept ------------
+  // --- Patch 2: SettingsApi.addComponent intercept ------------
   function wrapSettingsApi() {
     try {
       var orig = Lampa.SettingsApi.addComponent;
@@ -103,57 +78,66 @@
     } catch (e) { log('SettingsApi wrap failed: ' + e.message); }
   }
 
-  // --- Patch 4: MutationObserver — replace hardcoded SVG ------
-  //     The button icon is a string literal in the template, so it
-  //     cannot be intercepted via any Lampa API — DOM mutation is
-  //     the only reliable way to swap it after render.
-  function watchButtonIcon() {
-    if (!CONFIG.buttonIcon) {
-      log('buttonIcon empty — skipping icon replacement');
-      return;
+  // --- Patch 3: MutationObserver — subtitle + icon on .lampac--button
+  //     Both the icon SVG and data-subtitle are set at template-build time
+  //     inside online.js, so DOM mutation is the only reliable way to
+  //     change them after the button renders.
+  function watchButton() {
+    var svgTemplate = null;
+    if (CONFIG.buttonIcon) {
+      try {
+        var tmp = document.createElement('div');
+        tmp.innerHTML = CONFIG.buttonIcon;
+        svgTemplate = tmp.querySelector('svg');
+        if (!svgTemplate) log('buttonIcon has no <svg> — icon replacement skipped');
+      } catch(e) { log('buttonIcon parse failed: ' + e.message); }
     }
-    try {
-      var tmp = document.createElement('div');
-      tmp.innerHTML = CONFIG.buttonIcon;
-      var newSvgTemplate = tmp.querySelector('svg');
-      if (!newSvgTemplate) { log('buttonIcon is not a valid SVG'); return; }
 
-      function replaceSvgIn(btn) {
-        var existingSvg = btn.querySelector('svg');
-        if (existingSvg && !btn.dataset.z01patched) {
-          btn.dataset.z01patched = '1';
-          var clone = newSvgTemplate.cloneNode(true);
-          existingSvg.parentNode.replaceChild(clone, existingSvg);
-          log('Button icon replaced');
-        }
+    function patchBtn(btn) {
+      if (btn.dataset.z01patched) return;
+      btn.dataset.z01patched = '1';
+
+      // Update subtitle text
+      if (CONFIG.buttonSubtitle) {
+        btn.dataset.subtitle = CONFIG.buttonSubtitle;
+        log('Subtitle set: ' + CONFIG.buttonSubtitle);
       }
 
-      // Replace any already-rendered buttons
-      document.querySelectorAll('.lampac--button').forEach(replaceSvgIn);
+      // Replace icon SVG
+      if (svgTemplate) {
+        var existingSvg = btn.querySelector('svg');
+        if (existingSvg) {
+          existingSvg.parentNode.replaceChild(svgTemplate.cloneNode(true), existingSvg);
+          log('Icon replaced');
+        }
+      }
+    }
 
-      // Watch for future renders
+    // Patch buttons already in DOM
+    document.querySelectorAll('.lampac--button').forEach(patchBtn);
+
+    // Watch for future renders
+    try {
       var observer = new MutationObserver(function (mutations) {
         mutations.forEach(function (m) {
           m.addedNodes.forEach(function (node) {
             if (!node || node.nodeType !== 1) return;
             if (node.classList && node.classList.contains('lampac--button')) {
-              replaceSvgIn(node);
-            } else {
-              node.querySelectorAll && node.querySelectorAll('.lampac--button')
-                .forEach(replaceSvgIn);
+              patchBtn(node);
+            } else if (node.querySelectorAll) {
+              node.querySelectorAll('.lampac--button').forEach(patchBtn);
             }
           });
         });
       });
       observer.observe(document.body || document.documentElement,
         { childList: true, subtree: true });
-      log('MutationObserver watching for .lampac--button');
-    } catch (e) { log('MutationObserver failed: ' + e.message); }
+      log('MutationObserver active');
+    } catch(e) { log('MutationObserver failed: ' + e.message); }
   }
 
-  // --- Patch 5: post-load fallback ----------------------------
+  // --- Patch 4: post-load — onContextMenu wrap + watchButton --
   function postLoadPatch() {
-    // Wrap onContextMenu for context menu name (belt + suspenders)
     try {
       var mp = Lampa.Manifest && Lampa.Manifest.plugins;
       if (mp && typeof mp.onContextMenu === 'function') {
@@ -170,13 +154,7 @@
       }
     } catch (e) { log('onContextMenu wrap failed: ' + e.message); }
 
-    // Manifest name fallback
-    try {
-      var mp2 = Lampa.Manifest && Lampa.Manifest.plugins;
-      if (mp2 && CONFIG.buttonSubtitle) mp2.name = CONFIG.buttonSubtitle;
-    } catch(e) {}
-
-    watchButtonIcon();
+    watchButton();
     log('Post-load patches done');
   }
 
@@ -196,7 +174,6 @@
     },
     function () {
       log('Lampa ready — installing patches');
-      wrapManifest();
       wrapTranslate();
       wrapSettingsApi();
 
