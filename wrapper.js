@@ -31,7 +31,7 @@
   //  END OF CONFIG — do not edit below unless you know what you're doing
   // ============================================================
 
-  var ORIGIN_SCRIPT = 'http://z01.online/live.js';
+  var ORIGIN_SCRIPT = 'http://z01.online/online.js';
 
   // --- Helpers ------------------------------------------------
 
